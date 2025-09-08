@@ -11,6 +11,7 @@ import ChevronDownIcon from './icons/ChevronDownIcon';
 import UploadIcon from './icons/UploadIcon';
 import { Chat } from '@google/genai';
 import ChatInterface from './ChatInterface';
+import { useAuth } from '../contexts/AuthContext';
 
 type BatchStatus = 'idle' | 'recording' | 'paused' | 'complete' | 'processing' | 'error';
 
@@ -49,10 +50,10 @@ interface SerializableBatch {
 interface BatchProcessorProps {
     onBack: () => void;
     model: string;
-    apiKey: string;
 }
 
-const BatchProcessor: React.FC<BatchProcessorProps> = ({ onBack, model, apiKey }) => {
+const BatchProcessor: React.FC<BatchProcessorProps> = ({ onBack, model }) => {
+    const { user } = useAuth();
     const [batches, setBatches] = useState<Batch[]>([]);
     const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
     const { isRecording, startRecording, stopRecording, error: recorderError } = useAudioRecorder();
@@ -65,9 +66,12 @@ const BatchProcessor: React.FC<BatchProcessorProps> = ({ onBack, model, apiKey }
     // Auto-save effect
     useEffect(() => {
         const saveBatches = async () => {
+            if (!user) return;
+            const storageKey = `batchModeSave_${user.id}`;
+
             if (batches.length === 0) {
-                if (localStorage.getItem('batchModeSave')) {
-                    localStorage.removeItem('batchModeSave');
+                if (localStorage.getItem(storageKey)) {
+                    localStorage.removeItem(storageKey);
                 }
                 return;
             }
@@ -94,13 +98,13 @@ const BatchProcessor: React.FC<BatchProcessorProps> = ({ onBack, model, apiKey }
                         };
                     })
                 );
-                localStorage.setItem('batchModeSave', JSON.stringify(serializableBatches));
+                // For Firebase, replace this with an update to the user's document
+                localStorage.setItem(storageKey, JSON.stringify(serializableBatches));
             } catch (error) {
                 console.error("Failed to save batches:", error);
             }
         };
 
-        // Debounce saving to avoid excessive writes
         const handler = setTimeout(() => {
             saveBatches();
         }, 500);
@@ -108,12 +112,15 @@ const BatchProcessor: React.FC<BatchProcessorProps> = ({ onBack, model, apiKey }
         return () => {
             clearTimeout(handler);
         };
-    }, [batches]);
+    }, [batches, user]);
 
     // Load effect
     useEffect(() => {
-        const loadBatches = async () => {
-            const savedBatchesJSON = localStorage.getItem('batchModeSave');
+        const loadBatches = () => {
+            if (!user) return;
+            const storageKey = `batchModeSave_${user.id}`;
+            // For Firebase, replace this with a get call for the user's document
+            const savedBatchesJSON = localStorage.getItem(storageKey);
             if (savedBatchesJSON) {
                 try {
                     const serializableBatches: SerializableBatch[] = JSON.parse(savedBatchesJSON);
@@ -127,20 +134,6 @@ const BatchProcessor: React.FC<BatchProcessorProps> = ({ onBack, model, apiKey }
                                 isChatting: false,
                             };
                         });
-
-                        // Re-create chat sessions for processed batches
-                        for (const batch of loadedBatches) {
-                            if (batch.transcript && batch.audioBlobs.length > 0) {
-                                try {
-                                    const mimeType = getCleanMimeType(batch.audioBlobs[0]);
-                                    const mergedBlob = new Blob(batch.audioBlobs, { type: mimeType });
-                                    batch.chat = await createChat(apiKey, mergedBlob, batch.transcript, batch.model);
-                                } catch (chatError) {
-                                    console.error(`Failed to recreate chat for batch ${batch.name}:`, chatError);
-                                }
-                            }
-                        }
-
                         setBatches(loadedBatches);
                         const firstProcessed = loadedBatches.find(b => b.transcript);
                         if (firstProcessed) {
@@ -149,14 +142,12 @@ const BatchProcessor: React.FC<BatchProcessorProps> = ({ onBack, model, apiKey }
                     }
                 } catch (error) {
                     console.error("Failed to load saved batches:", error);
-                    localStorage.removeItem('batchModeSave');
+                    localStorage.removeItem(storageKey);
                 }
             }
         };
-        if (apiKey) {
-            loadBatches();
-        }
-    }, [apiKey]); // Run only on mount and when apiKey is present
+        loadBatches();
+    }, [user]); // Run only on mount and when user changes
 
     useEffect(() => {
         if (recorderError && activeBatchId) {
@@ -265,9 +256,9 @@ const BatchProcessor: React.FC<BatchProcessorProps> = ({ onBack, model, apiKey }
             try {
                 const mimeType = batch.audioBlobs[0].type;
                 const mergedBlob = new Blob(batch.audioBlobs, { type: mimeType });
-                const transcript = await processAudio(apiKey, mergedBlob, model);
+                const transcript = await processAudio(mergedBlob, model);
                 
-                const chatSession = await createChat(apiKey, mergedBlob, transcript, model);
+                const chatSession = await createChat(mergedBlob, transcript, model);
                 const aiGreeting = "I have reviewed the audio and transcript for this dictation. How can I help you further?";
                 const initialChatHistory = [{ author: 'AI' as const, text: `${transcript}\n\n${aiGreeting}` }];
 
@@ -293,9 +284,9 @@ const BatchProcessor: React.FC<BatchProcessorProps> = ({ onBack, model, apiKey }
         try {
             const mimeType = batchToReprocess.audioBlobs[0].type;
             const mergedBlob = new Blob(batchToReprocess.audioBlobs, { type: mimeType });
-            const transcript = await processAudio(apiKey, mergedBlob, newModel);
+            const transcript = await processAudio(mergedBlob, newModel);
             
-            const chatSession = await createChat(apiKey, mergedBlob, transcript, newModel);
+            const chatSession = await createChat(mergedBlob, transcript, newModel);
             const aiGreeting = "I have reviewed the audio and the new transcript. How can I help you further?";
             const initialChatHistory = [{ author: 'AI' as const, text: `${transcript}\n\n${aiGreeting}` }];
 
@@ -335,7 +326,7 @@ const BatchProcessor: React.FC<BatchProcessorProps> = ({ onBack, model, apiKey }
             if (!chatToUse && batch.transcript && batch.audioBlobs.length > 0) {
                 const mimeType = getCleanMimeType(batch.audioBlobs[0]);
                 const mergedBlob = new Blob(batch.audioBlobs, { type: mimeType });
-                chatToUse = await createChat(apiKey, mergedBlob, batch.transcript, batch.model);
+                chatToUse = await createChat(mergedBlob, batch.transcript, batch.model);
                 
                 // Update batch in state with the new chat session for future use
                 setBatches(prev => prev.map(b => b.id === batchId ? { ...b, chat: chatToUse } : b));
@@ -575,6 +566,8 @@ const BatchProcessor: React.FC<BatchProcessorProps> = ({ onBack, model, apiKey }
                                                                         aria-label={`Select AI Model for re-processing ${batch.name}`}
                                                                     >
                                                                         <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                                                                        <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
+                                                                        <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
                                                                     </select>
                                                                     <button
                                                                         onClick={() => handleReprocessBatch(batch.id)}

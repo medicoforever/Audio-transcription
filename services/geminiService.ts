@@ -1,21 +1,7 @@
 
 import { GoogleGenAI, Type, GenerateContentResponse, Chat } from "@google/genai";
 import { GEMINI_PROMPT } from '../constants';
-
-// A cache to store initialized GoogleGenAI instances for each API key.
-const aiClients: Map<string, GoogleGenAI> = new Map();
-
-const getAiClient = (apiKey: string): GoogleGenAI => {
-  if (!apiKey) {
-    throw new Error("API key is missing.");
-  }
-  if (!aiClients.has(apiKey)) {
-    // This creates a new instance for a new API key and stores it in the map.
-    aiClients.set(apiKey, new GoogleGenAI({ apiKey }));
-  }
-  return aiClients.get(apiKey)!;
-};
-
+import { getGeminiClient } from './geminiClient';
 
 export const getCleanMimeType = (blob: Blob): string => {
   let mimeType = blob.type;
@@ -61,8 +47,8 @@ export const base64ToBlob = (base64: string, mimeType: string): Blob => {
 };
 
 
-export const processAudio = async (apiKey: string, audioBlob: Blob, model: string): Promise<string> => {
-  const ai = getAiClient(apiKey);
+export const processAudio = async (audioBlob: Blob, model: string): Promise<string> => {
+  const ai = getGeminiClient();
   const base64Audio = await blobToBase64(audioBlob);
 
   const textPart = {
@@ -97,8 +83,8 @@ export const processAudio = async (apiKey: string, audioBlob: Blob, model: strin
   }
 };
 
-export const createChat = async (apiKey: string, audioBlob: Blob, initialTranscript: string, model: string): Promise<Chat> => {
-  const ai = getAiClient(apiKey);
+export const createChat = async (audioBlob: Blob, initialTranscript: string, model: string): Promise<Chat> => {
+  const ai = getGeminiClient();
   const base64Audio = await blobToBase64(audioBlob);
   
   const userMessageParts = [

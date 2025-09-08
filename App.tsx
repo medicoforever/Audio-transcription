@@ -7,7 +7,8 @@ import { processAudio, createChat, blobToBase64, getCleanMimeType, base64ToBlob 
 import Spinner from './components/ui/Spinner';
 import { Chat } from '@google/genai';
 import BatchProcessor from './components/BatchProcessor';
-import ApiKeyManager from './components/ApiKeyManager';
+import { useAuth } from './contexts/AuthContext';
+import AuthScreen from './components/AuthScreen';
 
 interface ChatMessage {
   author: 'You' | 'AI';
@@ -15,7 +16,8 @@ interface ChatMessage {
 }
 
 const App: React.FC = () => {
-  const [apiKey, setApiKey] = useState<string | null>(null);
+  const { user, apiKey, logout } = useAuth();
+
   const [mode, setMode] = useState<'single' | 'batch'>('single');
   const [model, setModel] = useState<string>('gemini-2.5-flash');
   const [status, setStatus] = useState<AppStatus>(AppStatus.Idle);
@@ -26,18 +28,10 @@ const App: React.FC = () => {
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [isChatting, setIsChatting] = useState<boolean>(false);
 
-  useEffect(() => {
-    // Check for saved API key on initial load
-    const savedKey = localStorage.getItem('gemini-api-key');
-    if (savedKey) {
-      setApiKey(savedKey);
-    }
-  }, []);
-
   // Auto-save logic
   useEffect(() => {
     const saveData = async () => {
-      if (status === AppStatus.Success && audioBlob) {
+      if (user && status === AppStatus.Success && audioBlob) {
         try {
           const base64Audio = await blobToBase64(audioBlob);
           const savedState = {
@@ -47,20 +41,23 @@ const App: React.FC = () => {
             model,
             status: AppStatus.Success,
           };
-          localStorage.setItem('singleModeSave', JSON.stringify(savedState));
+          // For Firebase, you would replace this with a call to update the user's document
+          localStorage.setItem(`singleModeSave_${user.id}`, JSON.stringify(savedState));
         } catch (error) {
             console.error("Failed to save single mode state:", error);
         }
       }
     };
     saveData();
-  }, [status, transcript, audioBlob, chatHistory, model]);
+  }, [status, transcript, audioBlob, chatHistory, model, user]);
 
-  // Load saved data on mount
+  // Load saved data on mount or user login
   useEffect(() => {
-    if (!apiKey) return; // Don't load if no API key
     const loadData = async () => {
-      const savedStateJSON = localStorage.getItem('singleModeSave');
+      if (!user) return;
+      
+      // For Firebase, you would replace this with a call to get the user's document
+      const savedStateJSON = localStorage.getItem(`singleModeSave_${user.id}`);
       if (savedStateJSON) {
         try {
           const savedState = JSON.parse(savedStateJSON);
@@ -74,31 +71,21 @@ const App: React.FC = () => {
             setModel(savedState.model);
             
             // Recreate chat session
-            const chatSession = await createChat(apiKey, blob, savedState.transcript, savedState.model);
+            const chatSession = await createChat(blob, savedState.transcript, savedState.model);
             setChat(chatSession);
 
             setStatus(AppStatus.Success);
           }
         } catch (error) {
           console.error("Failed to load saved state:", error);
-          localStorage.removeItem('singleModeSave');
+          localStorage.removeItem(`singleModeSave_${user.id}`);
         }
       }
     };
     loadData();
-  }, [apiKey]); // Run only on mount and when apiKey is available
-
-  const handleKeySaved = (key: string) => {
-    localStorage.setItem('gemini-api-key', key);
-    setApiKey(key);
-  };
+  }, [user]); // Re-run when user logs in
 
   const handleAudioSubmit = useCallback(async (audioBlob: Blob) => {
-    if (!apiKey) {
-      setError('API Key is not set.');
-      setStatus(AppStatus.Error);
-      return;
-    }
     if (!audioBlob || audioBlob.size === 0) {
       setError('The provided audio file is empty.');
       setStatus(AppStatus.Error);
@@ -109,11 +96,11 @@ const App: React.FC = () => {
     setTranscript('');
 
     try {
-      const processedText = await processAudio(apiKey, audioBlob, model);
+      const processedText = await processAudio(audioBlob, model);
       setTranscript(processedText);
       setAudioBlob(audioBlob);
 
-      const chatSession = await createChat(apiKey, audioBlob, processedText, model);
+      const chatSession = await createChat(audioBlob, processedText, model);
       setChat(chatSession);
       const aiGreeting = "I have reviewed the audio and the transcript. How can I help you further?";
       setChatHistory([{ author: 'AI', text: `${processedText}\n\n${aiGreeting}` }]);
@@ -124,14 +111,9 @@ const App: React.FC = () => {
       setError(err instanceof Error ? err.message : 'An unknown error occurred during processing.');
       setStatus(AppStatus.Error);
     }
-  }, [model, apiKey]);
+  }, [model]);
 
   const handleReprocess = useCallback(async (newModel: string) => {
-    if (!apiKey) {
-        setError('API Key is not set.');
-        setStatus(AppStatus.Error);
-        return;
-    }
     if (!audioBlob) {
         setError('No audio available to reprocess.');
         setStatus(AppStatus.Error);
@@ -145,10 +127,10 @@ const App: React.FC = () => {
     setChatHistory([]);
 
     try {
-        const processedText = await processAudio(apiKey, audioBlob, newModel);
+        const processedText = await processAudio(audioBlob, newModel);
         setTranscript(processedText);
 
-        const chatSession = await createChat(apiKey, audioBlob, processedText, newModel);
+        const chatSession = await createChat(audioBlob, processedText, newModel);
         setChat(chatSession);
         const aiGreeting = "I have reviewed the audio and the transcript. How can I help you further?";
         setChatHistory([{ author: 'AI', text: `${processedText}\n\n${aiGreeting}` }]);
@@ -160,7 +142,7 @@ const App: React.FC = () => {
         setError(err instanceof Error ? err.message : 'An unknown error occurred during reprocessing.');
         setStatus(AppStatus.Error);
     }
-  }, [audioBlob, apiKey]);
+  }, [audioBlob]);
   
   const handleSendMessage = async (message: string, audio?: Blob) => {
     if (!chat || isChatting) return;
@@ -212,7 +194,9 @@ const App: React.FC = () => {
     setChat(null);
     setChatHistory([]);
     setIsChatting(false);
-    localStorage.removeItem('singleModeSave');
+    if (user) {
+        localStorage.removeItem(`singleModeSave_${user.id}`);
+    }
   };
 
   const renderSingleModeContent = () => {
@@ -285,7 +269,7 @@ const App: React.FC = () => {
       case 'single':
         return renderSingleModeContent();
       case 'batch':
-        return <BatchProcessor model={model} apiKey={apiKey!} onBack={() => {
+        return <BatchProcessor model={model} onBack={() => {
           resetSingleMode();
           setMode('single');
         }} />;
@@ -295,22 +279,15 @@ const App: React.FC = () => {
   }
 
   const clearAllSavedData = () => {
-    if (window.confirm("Are you sure you want to clear all saved single and batch processing history? This action cannot be undone.")) {
-        localStorage.removeItem('singleModeSave');
-        localStorage.removeItem('batchModeSave');
+    if (user && window.confirm("Are you sure you want to clear all your saved single and batch processing history? This action cannot be undone.")) {
+        localStorage.removeItem(`singleModeSave_${user.id}`);
+        localStorage.removeItem(`batchModeSave_${user.id}`);
         window.location.reload();
     }
   };
-  
-  const manageApiKey = () => {
-      if (window.confirm("Are you sure you want to clear your API key? You will need to re-enter it to use the app.")) {
-        localStorage.removeItem('gemini-api-key');
-        setApiKey(null);
-      }
-  };
 
-  if (!apiKey) {
-    return <ApiKeyManager onKeySaved={handleKeySaved} />;
+  if (!user || !apiKey) {
+    return <AuthScreen />;
   }
 
   return (
@@ -333,6 +310,8 @@ const App: React.FC = () => {
                 aria-label="Select AI Model"
               >
                 <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
+                <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
               </select>
             </div>
           </div>
@@ -343,11 +322,11 @@ const App: React.FC = () => {
         <footer className="text-center mt-8 text-sm text-slate-500">
           <p>Powered by Gemini AI</p>
           <div className="flex justify-center gap-4 mt-2">
-            <button onClick={manageApiKey} className="text-xs text-slate-500 hover:underline focus:outline-none focus:ring-2 focus:ring-slate-400 rounded">
-                Manage API Key
+            <button onClick={clearAllSavedData} className="text-xs text-slate-500 hover:underline focus:outline-none focus:ring-2 focus:ring-slate-400 rounded">
+                Clear My Saved History
             </button>
-            <button onClick={clearAllSavedData} className="text-xs text-red-500 hover:underline focus:outline-none focus:ring-2 focus:ring-red-400 rounded">
-                Clear All Saved History
+            <button onClick={logout} className="text-xs text-red-500 hover:underline focus:outline-none focus:ring-2 focus:ring-red-400 rounded">
+                Manage API Key & Sign Out
             </button>
           </div>
         </footer>
